@@ -1,3 +1,4 @@
+
 import 'package:flutter/material.dart';
 
 import '../../models/user_role.dart';
@@ -10,15 +11,6 @@ import '../courier/courier_dashboard.dart';
 import '../central/central_dashboard.dart';
 import 'register_screen.dart';
 
-/// Pantalla principal de autenticación.
-///
-/// SRP:
-/// Esta pantalla se encarga de la interacción de inicio
-/// de sesión y navegación según el rol.
-///
-/// DIP:
-/// La pantalla depende de AuthRepository y no directamente
-/// de Supabase.
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
@@ -32,8 +24,6 @@ class _LoginScreenState extends State<LoginScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
 
-  // DIP:
-  // Dependemos de la abstracción AuthRepository.
   final AuthRepository _authRepository = SupabaseAuthService();
 
   bool _isLoading = false;
@@ -43,7 +33,6 @@ class _LoginScreenState extends State<LoginScreen> {
   void dispose() {
     _emailController.dispose();
     _passwordController.dispose();
-
     super.dispose();
   }
 
@@ -57,20 +46,30 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
+      debugPrint('QUEUEGO: iniciando autenticación...');
+
       final role = await _authRepository.login(
         email: _emailController.text.trim(),
         password: _passwordController.text,
       );
 
+      debugPrint('QUEUEGO: rol recibido: $role');
+
       if (!mounted) return;
 
       if (role == null) {
-        _showError('No se encontró un rol válido para este usuario.');
+        _showError(
+          'Inicio de sesión realizado, pero no se encontró '
+          'un rol válido en el perfil.',
+        );
         return;
       }
 
       _openDashboard(role);
-    } catch (error) {
+    } catch (error, stackTrace) {
+      debugPrint('ERROR AL INICIAR SESIÓN: $error');
+      debugPrint('DETALLES DEL ERROR: $stackTrace');
+
       if (!mounted) return;
 
       _showError(_getErrorMessage(error));
@@ -84,21 +83,18 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   void _openDashboard(UserRole role) {
-    Widget dashboard;
+    late final Widget dashboard;
 
     switch (role) {
       case UserRole.client:
         dashboard = const ClientDashboard();
         break;
-
       case UserRole.restaurant:
         dashboard = const RestaurantDashboard();
         break;
-
       case UserRole.courier:
         dashboard = const CourierDashboard();
         break;
-
       case UserRole.central:
         dashboard = const CentralDashboard();
         break;
@@ -111,37 +107,49 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   void _openRegister() {
-    Navigator.of(
-      context,
-    ).push(MaterialPageRoute(builder: (_) => const RegisterScreen()));
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => const RegisterScreen(),
+      ),
+    );
   }
 
   void _showError(String message) {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
   }
 
   String _getErrorMessage(Object error) {
-    final message = error.toString();
+    final message = error.toString().toLowerCase();
 
-    if (message.contains('invalid_credentials')) {
+    if (message.contains('invalid_credentials') ||
+        message.contains('invalid login credentials')) {
       return 'Correo o contraseña incorrectos.';
     }
 
-    if (message.contains('Invalid login credentials')) {
-      return 'Correo o contraseña incorrectos.';
-    }
-
-    if (message.contains('Email not confirmed')) {
+    if (message.contains('email not confirmed')) {
       return 'Debes confirmar tu correo electrónico.';
     }
 
-    if (message.contains('network')) {
-      return 'No hay conexión con el servidor.';
+    if (message.contains('network') ||
+        message.contains('socketexception') ||
+        message.contains('failed host lookup')) {
+      return 'No hay conexión con el servidor. '
+          'Comprueba tu conexión a internet.';
     }
 
-    return 'No se pudo iniciar sesión.';
+    if (message.contains('permission denied') ||
+        message.contains('rls')) {
+      return 'No hay permisos para consultar el perfil del usuario.';
+    }
+
+    if (message.contains('profiles')) {
+      return 'No se pudo consultar el perfil del usuario.';
+    }
+
+    return 'No se pudo iniciar sesión. Revisa la terminal '
+        'para conocer el error.';
   }
 
   @override
@@ -163,7 +171,9 @@ class _LoginScreenState extends State<LoginScreen> {
                     Text(
                       'QueueGo',
                       textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.headlineLarge
+                      style: Theme.of(context)
+                          .textTheme
+                          .headlineLarge
                           ?.copyWith(fontWeight: FontWeight.bold),
                     ),
 
@@ -217,11 +227,13 @@ class _LoginScreenState extends State<LoginScreen> {
                         labelText: 'Contraseña',
                         prefixIcon: const Icon(Icons.lock_outline),
                         suffixIcon: IconButton(
-                          onPressed: () {
-                            setState(() {
-                              _obscurePassword = !_obscurePassword;
-                            });
-                          },
+                          onPressed: _isLoading
+                              ? null
+                              : () {
+                                  setState(() {
+                                    _obscurePassword = !_obscurePassword;
+                                  });
+                                },
                           icon: Icon(
                             _obscurePassword
                                 ? Icons.visibility_outlined
@@ -261,7 +273,9 @@ class _LoginScreenState extends State<LoginScreen> {
 
                     TextButton(
                       onPressed: _isLoading ? null : _openRegister,
-                      child: const Text('¿No tienes una cuenta? Registrarse'),
+                      child: const Text(
+                        '¿No tienes una cuenta? Registrarse',
+                      ),
                     ),
 
                     const SizedBox(height: 24),

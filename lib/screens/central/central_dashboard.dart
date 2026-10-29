@@ -1,4 +1,6 @@
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../models/delivery_request.dart';
@@ -16,9 +18,13 @@ class CentralDashboard extends StatefulWidget {
 class _CentralDashboardState extends State<CentralDashboard> {
   final SupabaseCentralService _service = SupabaseCentralService();
 
+  Timer? _locationTimer;
+
   Map<String, int> _stats = {};
   List<DeliveryRequest> _pendingDeliveries = [];
+  List<DeliveryRequest> _activeDeliveries = [];
   List<Map<String, dynamic>> _couriers = [];
+  List<Map<String, dynamic>> _courierLocations = [];
 
   bool _loading = true;
   String? _error;
@@ -33,9 +39,22 @@ class _CentralDashboardState extends State<CentralDashboard> {
   void initState() {
     super.initState();
     _loadDashboard();
+
+    _locationTimer = Timer.periodic(
+      const Duration(seconds: 15),
+      (_) => _refreshTrackingData(),
+    );
+  }
+
+  @override
+  void dispose() {
+    _locationTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadDashboard() async {
+    if (!mounted) return;
+
     setState(() {
       _loading = true;
       _error = null;
@@ -45,7 +64,9 @@ class _CentralDashboardState extends State<CentralDashboard> {
       final results = await Future.wait([
         _service.getDeliveryStats(),
         _service.getPendingDeliveries(),
+        _service.getActiveDeliveries(),
         _service.getCouriers(),
+        _service.getCourierLocations(),
       ]);
 
       if (!mounted) return;
@@ -54,17 +75,46 @@ class _CentralDashboardState extends State<CentralDashboard> {
         _stats = results[0] as Map<String, int>;
         _pendingDeliveries =
             results[1] as List<DeliveryRequest>;
-        _couriers = results[2] as List<Map<String, dynamic>>;
+        _activeDeliveries =
+            results[2] as List<DeliveryRequest>;
+        _couriers =
+            results[3] as List<Map<String, dynamic>>;
+        _courierLocations =
+            results[4] as List<Map<String, dynamic>>;
         _loading = false;
       });
     } catch (e) {
       if (!mounted) return;
 
       setState(() {
-        _error = 'No se pudieron cargar los datos. '
+        _error =
+            'No se pudieron cargar los datos. '
             'Comprueba la conexión y los permisos de Supabase.';
         _loading = false;
       });
+    }
+  }
+
+  Future<void> _refreshTrackingData() async {
+    try {
+      final results = await Future.wait([
+        _service.getCourierLocations(),
+        _service.getActiveDeliveries(),
+        _service.getDeliveryStats(),
+      ]);
+
+      if (!mounted) return;
+
+      setState(() {
+        _courierLocations =
+            results[0] as List<Map<String, dynamic>>;
+        _activeDeliveries =
+            results[1] as List<DeliveryRequest>;
+        _stats = results[2] as Map<String, int>;
+      });
+    } catch (e) {
+      // Conservamos los datos actuales si falla una consulta.
+      // El siguiente ciclo volverá a intentarlo.
     }
   }
 
@@ -82,6 +132,8 @@ class _CentralDashboardState extends State<CentralDashboard> {
     setState(() => _selectedSection = section);
 
     switch (section) {
+      case 'Inicio':
+        break;
       case 'Solicitudes':
         _openRequests();
         break;
@@ -89,12 +141,7 @@ class _CentralDashboardState extends State<CentralDashboard> {
         _showCouriersDialog();
         break;
       case 'Seguimiento':
-        _showInfo(
-          'Seguimiento',
-          'El mapa muestra las coordenadas disponibles de las '
-              'solicitudes pendientes. El seguimiento GPS en tiempo '
-              'real requiere que los repartidores envíen su ubicación.',
-        );
+        _showTrackingDialog();
         break;
       case 'Reportes':
         _showInfo(
@@ -107,15 +154,51 @@ class _CentralDashboardState extends State<CentralDashboard> {
     }
   }
 
+  void _showTrackingDialog() {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.location_on, color: blue),
+            SizedBox(width: 10),
+            Expanded(child: Text('Seguimiento de entregas')),
+          ],
+        ),
+        content: Text(
+          'Entregas activas: ${_activeDeliveries.length}\n'
+          'Ubicaciones GPS registradas: ${_courierLocations.length}\n\n'
+          'El mapa de operaciones del panel muestra las solicitudes '
+          'y las ubicaciones recibidas de los repartidores. '
+          'Los datos se actualizan cada 15 segundos.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cerrar'),
+          ),
+          FilledButton.icon(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              _loadDashboard();
+            },
+            icon: const Icon(Icons.refresh),
+            label: const Text('Actualizar'),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _showInfo(String title, String message) {
     showDialog<void>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: Text(title),
         content: Text(message),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.pop(dialogContext),
             child: const Text('Cerrar'),
           ),
         ],
@@ -126,7 +209,7 @@ class _CentralDashboardState extends State<CentralDashboard> {
   void _showCouriersDialog() {
     showDialog<void>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Repartidores disponibles'),
         content: SizedBox(
           width: 420,
@@ -137,13 +220,13 @@ class _CentralDashboardState extends State<CentralDashboard> {
               : ListView.separated(
                   shrinkWrap: true,
                   itemCount: _couriers.length,
-                  separatorBuilder: (_, __) =>
+                  separatorBuilder: (_, index) =>
                       const Divider(height: 1),
                   itemBuilder: (context, index) {
                     final courier = _couriers[index];
                     final name =
                         courier['full_name']?.toString() ??
-                            'Sin nombre';
+                        'Sin nombre';
                     final email =
                         courier['email']?.toString() ?? '';
 
@@ -163,7 +246,7 @@ class _CentralDashboardState extends State<CentralDashboard> {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.pop(dialogContext),
             child: const Text('Cerrar'),
           ),
         ],
@@ -398,7 +481,9 @@ class _CentralDashboardState extends State<CentralDashboard> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  desktop ? 'Panel central' : 'QueueGo · Central',
+                  desktop
+                      ? 'Panel central'
+                      : 'QueueGo · Central',
                   style: const TextStyle(
                     color: navy,
                     fontSize: 19,
@@ -512,6 +597,8 @@ class _CentralDashboardState extends State<CentralDashboard> {
                     children: [
                       _buildPendingPanel(),
                       const SizedBox(height: 18),
+                      _buildActivePanel(),
+                      const SizedBox(height: 18),
                       _buildCourierPanel(),
                     ],
                   ),
@@ -522,6 +609,8 @@ class _CentralDashboardState extends State<CentralDashboard> {
             _buildMapPanel(),
             const SizedBox(height: 20),
             _buildPendingPanel(),
+            const SizedBox(height: 20),
+            _buildActivePanel(),
             const SizedBox(height: 20),
             _buildCourierPanel(),
           ],
@@ -585,7 +674,9 @@ class _CentralDashboardState extends State<CentralDashboard> {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(15),
-        border: Border.all(color: const Color(0xFFE7ECF3)),
+        border: Border.all(
+          color: const Color(0xFFE7ECF3),
+        ),
       ),
       child: Row(
         children: [
@@ -630,12 +721,19 @@ class _CentralDashboardState extends State<CentralDashboard> {
   }
 
   Widget _buildMapPanel() {
+    final allDeliveries = [
+      ..._pendingDeliveries,
+      ..._activeDeliveries,
+    ];
+
     return Container(
       height: 460,
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(17),
-        border: Border.all(color: const Color(0xFFE7ECF3)),
+        border: Border.all(
+          color: const Color(0xFFE7ECF3),
+        ),
       ),
       clipBehavior: Clip.antiAlias,
       child: Column(
@@ -659,7 +757,7 @@ class _CentralDashboardState extends State<CentralDashboard> {
                       ),
                       SizedBox(height: 5),
                       Text(
-                        'Ubicaciones de solicitudes pendientes',
+                        'Solicitudes, entregas activas y repartidores',
                         style: TextStyle(
                           color: muted,
                           fontSize: 11,
@@ -689,10 +787,14 @@ class _CentralDashboardState extends State<CentralDashboard> {
               ],
             ),
           ),
-          const Divider(height: 1, color: Color(0xFFE7ECF3)),
+          const Divider(
+            height: 1,
+            color: Color(0xFFE7ECF3),
+          ),
           Expanded(
             child: DeliveryMap(
-              deliveries: _pendingDeliveries,
+              deliveries: allDeliveries,
+              courierLocations: _courierLocations,
             ),
           ),
         ],
@@ -713,14 +815,19 @@ class _CentralDashboardState extends State<CentralDashboard> {
       child: _loading
           ? const Padding(
               padding: EdgeInsets.all(24),
-              child: Center(child: CircularProgressIndicator()),
+              child: Center(
+                child: CircularProgressIndicator(),
+              ),
             )
           : deliveries.isEmpty
               ? const Padding(
                   padding: EdgeInsets.symmetric(vertical: 18),
                   child: Text(
                     'No hay solicitudes pendientes.',
-                    style: TextStyle(color: muted, fontSize: 12),
+                    style: TextStyle(
+                      color: muted,
+                      fontSize: 12,
+                    ),
                   ),
                 )
               : Column(
@@ -738,10 +845,79 @@ class _CentralDashboardState extends State<CentralDashboard> {
                       width: double.infinity,
                       child: OutlinedButton.icon(
                         onPressed: _openRequests,
-                        icon: const Icon(Icons.assignment_outlined),
-                        label: const Text('Gestionar solicitudes'),
+                        icon: const Icon(
+                          Icons.assignment_outlined,
+                        ),
+                        label: const Text(
+                          'Gestionar solicitudes',
+                        ),
                       ),
                     ),
+                  ],
+                ),
+    );
+  }
+
+  Widget _buildActivePanel() {
+    final deliveries = _activeDeliveries.take(4).toList();
+
+    return _panel(
+      title: 'Entregas en curso',
+      subtitle: 'Domicilios asignados o en camino',
+      trailing: Icon(
+        Icons.local_shipping_outlined,
+        color: blue,
+      ),
+      child: _loading
+          ? const Padding(
+              padding: EdgeInsets.all(18),
+              child: Center(
+                child: CircularProgressIndicator(),
+              ),
+            )
+          : deliveries.isEmpty
+              ? const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 12),
+                  child: Text(
+                    'No hay entregas activas en este momento.',
+                    style: TextStyle(
+                      color: muted,
+                      fontSize: 12,
+                    ),
+                  ),
+                )
+              : Column(
+                  children: [
+                    for (var i = 0; i < deliveries.length; i++) ...[
+                      if (i > 0)
+                        const Divider(
+                          height: 20,
+                          color: Color(0xFFE7ECF3),
+                        ),
+                      _deliveryRow(deliveries[i]),
+                      const SizedBox(height: 8),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 9,
+                            vertical: 5,
+                          ),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFE4F1FF),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(
+                            deliveries[i].status.label,
+                            style: const TextStyle(
+                              color: blue,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ],
                 ),
     );
@@ -824,7 +1000,9 @@ class _CentralDashboardState extends State<CentralDashboard> {
       child: _loading
           ? const Padding(
               padding: EdgeInsets.all(18),
-              child: Center(child: CircularProgressIndicator()),
+              child: Center(
+                child: CircularProgressIndicator(),
+              ),
             )
           : Column(
               children: [
@@ -864,10 +1042,11 @@ class _CentralDashboardState extends State<CentralDashboard> {
                   ],
                 ),
                 const SizedBox(height: 12),
-                const Text(
-                  'La lista incluye perfiles activos de Supabase; '
-                  'no representa la ubicación GPS en tiempo real.',
-                  style: TextStyle(
+                Text(
+                  'Ubicaciones GPS recibidas: '
+                  '${_courierLocations.length}. '
+                  'Consulta cada 15 segundos.',
+                  style: const TextStyle(
                     color: muted,
                     fontSize: 11,
                     height: 1.5,
@@ -878,7 +1057,9 @@ class _CentralDashboardState extends State<CentralDashboard> {
                   width: double.infinity,
                   child: OutlinedButton(
                     onPressed: _showCouriersDialog,
-                    child: const Text('Consultar repartidores'),
+                    child: const Text(
+                      'Consultar repartidores',
+                    ),
                   ),
                 ),
               ],
@@ -898,7 +1079,9 @@ class _CentralDashboardState extends State<CentralDashboard> {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(17),
-        border: Border.all(color: const Color(0xFFE7ECF3)),
+        border: Border.all(
+          color: const Color(0xFFE7ECF3),
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

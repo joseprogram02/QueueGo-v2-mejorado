@@ -8,7 +8,10 @@ import '../models/delivery_request.dart';
 abstract class CentralRepository {
   Future<List<DeliveryRequest>> getPendingDeliveries();
 
+  Future<List<DeliveryRequest>> getActiveDeliveries();
+
   Future<List<Map<String, dynamic>>> getCouriers();
+  Future<List<Map<String, dynamic>>> getCourierLocations();
 
   Future<void> assignDelivery({
     required String deliveryId,
